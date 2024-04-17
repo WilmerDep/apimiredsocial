@@ -1,7 +1,7 @@
 // IMPORTACION DE MODULOS Y DEPENDENCIAS
 const User = require("../models/user");
 const bcrypt = require("bcrypt");
-
+const mongoosePaginate = require('mongoose-paginate-v2');
 // SERVICIOS
 const jwt = require("../services/jwt");
 
@@ -147,17 +147,27 @@ const profile = async (req, res) => {
   }
 }
 
-const list = (req, res) => {
+const list = async (req, res) => {
   try {
     // CONTROLAR LA PAGINACION
+    let page = 1;
+    if (req.params.page) {
+      page = req.params.page; // CONVETIDO A PARAMETRO URL
+    }
+    page = parseInt(page); // CONVERTIDO A NUMERO ENTERO
 
     // CONSULTAR CON MONGOOSE LA PAGINACION
-
+    let itemsPerPage = 5;
+   
+   /* const listUser = await User.find().sort('_id').paginate
+    (page, itemsPerPage, (error, users, total) => {
+      
+    });*/
     // DEVOLVER EL RESULTADO (POSTERIORMENTE INFO FOLLOW)
-
     return res.status(200).send({
       status: "success",
-      message: "RUTA DE LISTADO DE USUARIOS"
+      message: "RUTA DE LISTADO DE USUARIOS",
+      page
     });
 
   } catch (error) {
