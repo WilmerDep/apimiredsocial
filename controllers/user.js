@@ -1,9 +1,13 @@
 // IMPORTACION DE MODULOS Y DEPENDENCIAS
 const User = require("../models/user");
 const bcrypt = require("bcrypt");
-const mongoosePaginate = require('mongoose-paginate-v2');
+const mongoosePagination = require("mongoose-pagination");
+const fs = require("fs");
+const path = require("path");
 // SERVICIOS
 const jwt = require("../services/jwt");
+const { error } = require("console");
+const followService = require("../services/followService");
 
 // ACCIONES DE PRUEBA
 const pruebaUser = (req, res) => {
@@ -133,11 +137,16 @@ const profile = async (req, res) => {
       role: 0,
     }); // SELECT PARA QUITAR OPCIONES A MOSTRAR
 
+    // INFORMACION DE SEGUIMIENTO PARA SABER SI ME SIGUEN O SI SIGO A OTRA PERSONA
+    const followInfo = await followService.followThisUser(req.user.id, id);
+
     // DEVOLVER EL RESULTADO
     return res.status(200).send({
       status: "success",
       message: "HAZ INICIADO SESION CON EXITO",
       userProfile,
+      following: followInfo.following,
+      followers: followInfo.followers
     });
   } catch (error) {
     return res.status(404).send({
@@ -149,39 +158,212 @@ const profile = async (req, res) => {
 
 const list = async (req, res) => {
   try {
-    // CONTROLAR LA PAGINACION
-    let page = 1;
+    // para pasar el parametro por url
     if (req.params.page) {
-      page = req.params.page; // CONVETIDO A PARAMETRO URL
+      page = parseInt(req.params.page); // para volverlo un entero
     }
-    page = parseInt(page); // CONVERTIDO A NUMERO ENTERO
 
-    // CONSULTAR CON MONGOOSE LA PAGINACION
     let itemsPerPage = 5;
-   
-   /* const listUser = await User.find().sort('_id').paginate
-    (page, itemsPerPage, (error, users, total) => {
-      
-    });*/
-    // DEVOLVER EL RESULTADO (POSTERIORMENTE INFO FOLLOW)
+    let skip = (page - 1) * itemsPerPage;
+
+   // Consulta adicional para contar el número total de usuarios
+    const totalUsers = await User.countDocuments();  
+
+   // Consulta para filtrar los usuarios y limitarlos por paginas
+    const usersList = await User.find().sort('_id').skip(skip).limit(itemsPerPage).exec();
+    
+    if (!totalUsers) {
+      return res.status(404).send({
+        status: "error",
+        message: "NO HAY USUARIOS DISPONIBLES",
+        error: error.message
+      });
+    }
+
+    // INFORMACION DE SEGUIMIENTO PARA SABER SI ME SIGUEN O SI SIGO A OTRA PERSONA
+    const followUsersIds = await followService.followUsersIds(req.user.id);
+
+    // DEVOLVER LOS USUARIOS (TAMBIEN INFO DE SEGUIDORES)  
     return res.status(200).send({
       status: "success",
       message: "RUTA DE LISTADO DE USUARIOS",
-      page
+      usersList,
+      page,
+      itemsPerPage,
+      totalUsers,
+      pages: Math.ceil(totalUsers/itemsPerPage),
+      user_following: followUsersIds.following,
+      user_follow_me: followUsersIds.followers
     });
 
   } catch (error) {
-     return res.status(404).send({
+    return res.status(500).send({
       status: "error",
-      message: "ERROR PAGINA NO ENCONTRADA",
+      message: "ERROR EN LA CONSULTA",
+      error: error.message
     });
   }
 }
+
+const updateUser = async (req, res) =>{
+  try {
+    // RECOGER INFO DE USUARIO A ACTUALIZAR
+    let userIdentity = req.user;
+    let userToUpdate = req.body;
+  
+    // ELIMINAR CAMPOS SOBRANTES
+    delete userToUpdate.iat;
+    delete userToUpdate.exp;
+    delete userToUpdate.role;
+    delete userToUpdate.image;
+
+    // COMPROBAR SI EL USUARIO EXISTE
+    const users = await User.find({
+      $or: [
+        {
+          email: userToUpdate.email.toLowerCase(),
+          nick: userToUpdate.nick.toLowerCase(),
+        },
+      ],
+    });
+
+    let userIsset = false;
+      users.forEach(user => {
+        if (user && user._id != userIdentity.id) userIsset = true;
+      }); 
+
+    if (userIsset) {
+      return res.status(200).send({
+        status: "error",
+        message: "EL USUARIO YA EXISTE",
+      });
+    }
+
+    if (userToUpdate.password) {
+      // CIFRAR LA CONTRASEñA
+      let pwd = await bcrypt.hash(userToUpdate.password, 10);
+      userToUpdate.password = pwd;
+      
+      // BUSCAR Y ACTULIZAR EL USUARIO
+      const newUserUpdate = await User.findByIdAndUpdate({_id:userIdentity.id}, userToUpdate, {new:true});
+
+      if (!userToUpdate) {
+        return res.status(404).send({
+          status: "error",
+          message: "ERROR AL ACTUALIZAR XDDE",
+          error: error.message
+        });
+      }
+
+      // DEVOLVER RESPUESTA
+      return res.status(200).send({
+        status: "success",
+        message: "METODO PARA ACTUALIZAR USUARIOS",
+        user:newUserUpdate
+      });
+    }
+  } catch (error) {
+    return res.status(500).send({
+      status: "error",
+      message: "ERROR AL ACTUALIZAR USUARIO",
+      error: error.message
+    });
+  }
+}
+
+
+const upload = async (req, res) => {
+  try {
+    let userUpload = req.user;
+    // CONSEGUIR EL NOMBRE DEL ARCHIVO
+    let imagen = req.file.originalname;
+    let imageName = req.file.filename;
+     // SACAR LA EXTENCION DEL ARCHIVO
+     const imageSplit = imagen.split("\.");
+     const extesion = imageSplit[1];
+
+    // RECOGER EL FICHERO DE IMAGEN Y COMPROBAR SI EXISTE
+    if (!req.file) {
+      // DEVOLVER RESPUESTA NEGATIVA
+      return res.status(400).send({
+        status: "error",
+        message: "ERROR LA PETICION NO INCLUYE LA IMAGEN"
+      });
+    }
+   
+    // COMPROBAR EXTENSION
+    if (!["png", "jpg", "jpeg", "gif", "webp"].includes(extesion.toLowerCase())) {
+      // BORRAR EL ARCHIVO SUBIDO SI NO ES VALIDO   
+      const filePath = req.file.filePath;
+      const fileDeleted = fs.unlinkSync(filePath);
+      // DEVOLVER RESPUESTA NEGATIVA
+      return res.status(422).send({
+        status: "error",
+        message: "ERROR EXTENSION NO VALIDA!!"
+      });
+    }
+
+    // ACTUALIZAR LA IMAGEN DEL USUARIO EN LA BASE DE DATOS
+    let userUpdated = await User.findOneAndUpdate(
+      { _id: req.user.id }, // Utilizamos un objeto para filtrar por el ID del usuario
+      { image: imageName }, // Establecemos la nueva imagen del usuario
+      { new: true } // Opción para devolver el documento actualizado
+    );
+
+    // Verificar si el usuario fue actualizado correctamente
+    if (!userUpdated) {
+      return res.status(500).send({
+        status: "error",
+        message: "ERROR AL ACTUALIZAR EL USUARIO EL CAMPO ESTA VACIO",
+        userUpload,
+        file: req.file
+      });
+    }
+
+    // DEVOLVER RESPUESTA EXITOSA
+    return res.status(200).send({
+      status: "success",
+      message: "SUBIDA DE IMAGEN EXITOSA",
+      user: userUpdated,
+      file: req.file
+    });
+  } catch (error) {
+    // Devolver respuesta de error con el mensaje específico y el código de estado adecuado
+    return res.status(400).send({
+      status: "error",
+      message: "ERROR AL ACTUALIZAR EL USUARIO",
+    });
+  }
+}
+const avatar = (req, res)=> {
+
+  // SACAR EL PARAMETRO DE LA URL
+  const file = req.params.file;
+  // MONTAR LA RUTA DE LA IMAGEN
+  const filePath = "./uploads/avatars/"+file;
+  // COMPROBAR QUE EXISTE
+  fs.stat(filePath, (error, exists)=>{
+    if (!exists) {
+      return res.status(404).send({
+        status: "error",
+        message: "ERROR LA IMAGEN NO EXISTE",
+    });
+    }
+    
+    // DEVOLVER RESPUESTA EXITOSA
+    // DEVOLVER EL FILE
+    return res.sendFile(path.resolve(filePath));
+  });
+}
+
 // EXPORTAR ACCIONES
 module.exports = {
   pruebaUser,
   register,
   login,
   profile,
-  list
+  list,
+  updateUser,
+  upload,
+  avatar
 }
